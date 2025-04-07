@@ -1,0 +1,18 @@
+[package]
+name = "snake"
+version = "0.1.0"
+edition = "2021"
+default-run = "snake"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tempfile = "3"
+walkdir = "2"
+colored = "3"
+lalrpop-util = { version = "0.22", features = ["lexer"] }
+regex = "1"
+clap = { version = "4.5", features = ["derive", "wrap_help"] }
+im = "15.1"
+itertools = "0.14"
+layout-rs = { version = "0.1" }
