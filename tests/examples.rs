@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 macro_rules! mk_test {
     ($test_name:ident, $file_name:expr, $input:expr, $expected_output:expr) => {
         #[test]
@@ -121,6 +123,230 @@ mod public_diamondback {
         "[[395, 476, 1453, <loop>], 0, [[], <loop>, <loop>, [395, 476, 1453, <loop>], <loop>, []]]"
     );
 }
+
+mod ana;
+mod graph_parser;
+mod public_optimizations {
+    use super::*;
+    use graph_parser::*;
+    use snake::{backend::*, frontend::*, middle_end::*, parser::*, runner::*, txt::*};
+
+    mod assertion_removal {
+        use super::*;
+
+        fn test(
+            src_file: impl Into<PathBuf>, expected_ssa_file: impl Into<PathBuf>,
+        ) -> Result<(), String> {
+            let inp =
+                read_file(&src_file.into()).map_err(|e| format!("Error reading file: {}", e))?;
+            let file_info = FileInfo::new(&inp);
+            let raw_ast = ProgParser::new()
+                .parse(&inp)
+                .map_err(|e| format!("Error parsing program: {}", e))?;
+
+            let mut resolver = Resolver::new();
+            let resolved_ast = resolver
+                .resolve_prog(raw_ast)
+                .map_err(|e| format!("Error resolving ast: {}", file_info.report_error(e)))?;
+
+            let mut lowerer = Lowerer::from(resolver);
+            let ssa = lowerer.lower_prog(resolved_ast);
+            let ssa = AssertionRemover::new(&ssa).optimize(ssa);
+
+            let ssa_str = format!("{}", ssa);
+            let expected_ssa_str = read_file(&expected_ssa_file.into())
+                .map_err(|e| format!("Error reading file: {}", e))?;
+
+            assert_eq!(ssa_str.trim(), expected_ssa_str.trim());
+            Ok(())
+        }
+
+        #[test]
+        fn simple_add_3() -> Result<(), String> {
+            test("examples/assertions/simple_add.dbk", "examples/assertions/simple_add.ssa")
+        }
+        #[test]
+        fn loop1_3() -> Result<(), String> {
+            test("examples/assertions/loop1.dbk", "examples/assertions/loop1.ssa")
+        }
+        #[test]
+        fn extern0_3() -> Result<(), String> {
+            test("examples/assertions/extern0.dbk", "examples/assertions/extern0.ssa")
+        }
+    }
+
+    mod liveness_and_conflict_analyses {
+        use super::*;
+
+        fn test(
+            src_file: impl Into<PathBuf>, graph_file: impl Into<PathBuf>,
+        ) -> Result<(), String> {
+            let inp =
+                read_file(&src_file.into()).map_err(|e| format!("Error reading file: {}", e))?;
+            let file_info = FileInfo::new(&inp);
+
+            let raw_ast = ProgParser::new()
+                .parse(&inp)
+                .map_err(|e| format!("Error parsing program: {}", e))?;
+
+            let mut resolver = Resolver::new();
+            let resolved_ast = resolver
+                .resolve_prog(raw_ast)
+                .map_err(|e| format!("Error resolving ast: {}", file_info.report_error(e)))?;
+
+            let mut lowerer = Lowerer::from(resolver);
+            let ssa = lowerer.lower_prog(resolved_ast);
+            let ssa = CopyPropagator::new().run(ssa);
+
+            let live_ssa = LivenessAnalyzer::new(&ssa).analyze(ssa);
+            let conflicts = ConflictAnalysis::new(&live_ssa);
+
+            let graph = GraphParser::new()
+                .parse(&format!("graph {}", conflicts.interference))
+                .map_err(|e| format!("Error parsing graph: {}", e))?;
+            let expected_graph = GraphParser::new()
+                .parse(&format!(
+                    "graph {}",
+                    read_file(&graph_file.into())
+                        .map_err(|e| format!("Error reading file: {}", e))?
+                ))
+                .map_err(|e| format!("Error parsing graph: {}", e))?;
+
+            ana::should_be_same_graph(&graph, &expected_graph)?;
+            Ok(())
+        }
+
+        #[test]
+        fn chain_1() -> Result<(), String> {
+            test("examples/graphs/chain.dbk", "examples/graphs/chain.graph")
+        }
+
+        #[test]
+        fn itail_reuse_test_1() -> Result<(), String> {
+            test("examples/graphs/itail_reuse.dbk", "examples/graphs/itail_reuse.graph")
+        }
+        #[test]
+        fn if_test_1() -> Result<(), String> {
+            test("examples/graphs/if.dbk", "examples/graphs/if.graph")
+        }
+        #[test]
+        fn param_test_1() -> Result<(), String> {
+            test("examples/graphs/param.dbk", "examples/graphs/param.graph")
+        }
+    }
+
+    mod graph_coloring {
+        use super::*;
+
+        const NO_REG: &'static str = "none";
+        const ONE_REG: &'static str = "none+r8";
+        const TWO_REGS: &'static str = "none+r8+r9";
+        const THREE_REGS: &'static str = "none+r8+r9+r10";
+        const FOUR_REGS: &'static str = "none+r8+r9+r10+r11";
+        const FIVE_REGS: &'static str = "none+r8+r9+r10+r11+r12";
+
+        fn test(
+            regs: &'static str, allow_spills: bool, src_file: impl Into<PathBuf>,
+            expected_graph_file: impl Into<PathBuf>,
+        ) -> Result<(), String> {
+            use snake::cli::RegisterSelection;
+            use std::str::FromStr;
+            let inp =
+                read_file(&src_file.into()).map_err(|e| format!("Error reading file: {}", e))?;
+            let file_info = FileInfo::new(&inp);
+
+            let raw_ast = ProgParser::new()
+                .parse(&inp)
+                .map_err(|e| format!("Error parsing program: {}", e))?;
+
+            let mut resolver = Resolver::new();
+            let resolved_ast = resolver
+                .resolve_prog(raw_ast)
+                .map_err(|e| format!("Error resolving ast: {}", file_info.report_error(e)))?;
+
+            let mut lowerer = Lowerer::from(resolver);
+            let ssa = lowerer.lower_prog(resolved_ast);
+            let ssa = CopyPropagator::new().run(ssa);
+
+            let live_ssa = LivenessAnalyzer::new(&ssa).analyze(ssa);
+            let conflicts = ConflictAnalysis::new(&live_ssa);
+
+            let mut allocator = RegisterAllocator::new();
+            allocator.graph_color(
+                conflicts,
+                &RegisterSelection::from_str(regs).unwrap().to_registers(),
+                false,
+            );
+            let coloring =
+                allocator.assignment.iter().map(|(k, v)| (k.to_string(), v.to_owned())).collect();
+            let graph = GraphParser::new()
+                .parse(&format!(
+                    "graph {}",
+                    read_file(&expected_graph_file.into())
+                        .map_err(|e| format!("Error reading file: {}", e))?
+                ))
+                .map_err(|e| format!("Error parsing graph: {}", e))?;
+
+            let () = crate::ana::valid_coloring(&graph, &coloring)?;
+            assert!(
+                allow_spills || (crate::ana::count_spills(&coloring) == 0),
+                "You spilled when you didn't need to"
+            );
+
+            Ok(())
+        }
+
+        #[test]
+        fn chain_1() -> Result<(), String> {
+            test(THREE_REGS, false, "examples/graphs/chain.dbk", "examples/graphs/chain.graph")
+        }
+
+        #[test]
+        fn chain_spill_1() -> Result<(), String> {
+            test(TWO_REGS, true, "examples/graphs/chain.dbk", "examples/graphs/chain.graph")
+        }
+
+        #[test]
+        fn chain_spill_all_1() -> Result<(), String> {
+            test(NO_REG, true, "examples/graphs/chain.dbk", "examples/graphs/chain.graph")
+        }
+
+        #[test]
+        fn if_1() -> Result<(), String> {
+            test(THREE_REGS, false, "examples/graphs/if.dbk", "examples/graphs/if.graph")
+        }
+
+        #[test]
+        fn itail_reuse_1() -> Result<(), String> {
+            test(
+                ONE_REG,
+                false,
+                "examples/graphs/itail_reuse.dbk",
+                "examples/graphs/itail_reuse.graph",
+            )
+        }
+
+        #[test]
+        fn itail_reuse_spill_all_1() -> Result<(), String> {
+            test(
+                NO_REG,
+                true,
+                "examples/graphs/itail_reuse.dbk",
+                "examples/graphs/itail_reuse.graph",
+            )
+        }
+
+        #[test]
+        fn param_1() -> Result<(), String> {
+            test(TWO_REGS, false, "examples/graphs/param.dbk", "examples/graphs/param.graph")
+        }
+
+        #[test]
+        fn param_spill_1() -> Result<(), String> {
+            test(ONE_REG, true, "examples/graphs/param.dbk", "examples/graphs/param.graph")
+        }
+    }
+}
 /*
  * YOUR TESTS END HERE
  */
@@ -128,7 +354,7 @@ mod public_diamondback {
 /* ----------------------- Test Implementation Details ---------------------- */
 
 use snake::{interp, runner};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 fn test_example_file(
     f: &str, args: impl IntoIterator<Item = &'static str>, expected: &str,
