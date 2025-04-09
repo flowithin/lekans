@@ -27,9 +27,13 @@ struct Cli {
     #[arg(short, long, value_name = "output")]
     output: Option<PathBuf>,
 
-    /// Apply specified optional optimizations; defaults to apply all optimizations
-    /// Format: <optimization>[,<optimization> ...]
-    /// Example: -O=cp,ar
+    /// Apply specified optional optimizations; defaults to apply no optimizations
+    /// To apply all optimizations, use "all"
+    /// Format: [<optimization>, ...]
+    /// Example:
+    ///  - "-O": apply no optimization
+    ///  - "-O=cp,ar": apply only copy propagation and assertion removal
+    ///  - "-O=all": apply all optimizations
     #[arg(short = 'O', long, alias = "opts", value_name = "optimization", num_args = 0..)]
     optimizations: Option<OptimizationCollection>,
 
@@ -74,22 +78,18 @@ struct Cli {
 
 fn run_cli(cli: &Cli) -> Result<(), String> {
     let conf = {
-        let mut conf = CompilerConf::new();
-        match cli.optimizations {
-            None => {}
-            Some(ref opts) => {
-                conf.set_optimizations(opts.clone());
-            }
-        }
-        conf.set_verbose(match cli.verbose {
-            0 => Verbosity::Minimalistic,
-            1 => Verbosity::Moderate,
-            2 => Verbosity::Mouthful,
-            _ => {
-                eprintln!("It's a bit too verbose, don't you think?");
-                Verbosity::Mouthful
-            }
-        });
+        let conf = CompilerConf::new(
+            cli.optimizations.clone().into_iter().flatten(),
+            match cli.verbose {
+                0 => Verbosity::Minimalistic,
+                1 => Verbosity::Moderate,
+                2 => Verbosity::Mouthful,
+                _ => {
+                    eprintln!("It's a bit too verbose, don't you think?");
+                    Verbosity::Mouthful
+                }
+            },
+        );
         conf
     };
 

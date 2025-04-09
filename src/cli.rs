@@ -29,14 +29,8 @@ pub struct CompilerConf {
 }
 
 impl CompilerConf {
-    pub fn new() -> Self {
-        Self { optimizations: Optimization::all(), verbose: Verbosity::Minimalistic }
-    }
-    pub fn set_optimizations(&mut self, optimizations: impl IntoIterator<Item = Optimization>) {
-        self.optimizations = optimizations.into_iter().collect();
-    }
-    pub fn set_verbose(&mut self, verbose: Verbosity) {
-        self.verbose = verbose;
+    pub fn new(optimizations: impl IntoIterator<Item = Optimization>, verbose: Verbosity) -> Self {
+        Self { optimizations: optimizations.into_iter().collect(), verbose }
     }
 }
 
@@ -76,6 +70,9 @@ impl std::str::FromStr for OptimizationCollection {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         // split on commas
+        if s == "all" {
+            return Ok(OptimizationCollection { optimizations: Optimization::all() });
+        }
         let optimizations: Vec<&str> = s.split(',').collect();
         let optimizations = optimizations
             .into_iter()
@@ -94,6 +91,7 @@ impl IntoIterator for OptimizationCollection {
         self.optimizations.into_iter()
     }
 }
+
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Verbosity {
     /// Only print the final output.
