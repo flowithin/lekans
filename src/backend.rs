@@ -6,6 +6,7 @@
 use crate::ana::*;
 use crate::asm::*;
 use crate::identifiers::*;
+use crate::middle_end::CopyPropagator;
 use crate::ssa::*;
 use crate::types::*;
 use std::collections::{HashMap, HashSet};
@@ -73,6 +74,7 @@ impl LivenessAnalyzer {
     }
 
     pub fn analyze<T>(mut self, prog: Program<VarName, T>) -> Program<VarName, LiveSet> {
+        //let mut prog = CopyPropagator::new().run(prog);
         let mut prog = self.analyze_prog(prog);
         while self.previous != self.current {
             self.previous = std::mem::take(&mut self.current);
@@ -622,10 +624,21 @@ impl ConflictAnalysis {
         use BlockBody::*;
         match b {
             Operation {
-                dest, next, ana, ..
+                dest,
+                next,
+                ana,
+                op,
             } => {
-                self.order.push(dest);
-                self.build_block_body(*next);
+                self.order.push(dest.clone());
+                self.build_block_body(*next.clone());
+                self.interference.insert_vertex(dest.clone());
+                Get_param(op.clone()).iter().for_each(|var| {
+                    if let Immediate::Var(var) = var {
+                        if next.analysis().contains(var) {
+                            self.interference.insert_edge(var.clone(), dest.clone());
+                        }
+                    }
+                });
                 self.conflict_all(&ana);
             }
             Terminator(_, ana) => {
@@ -644,7 +657,6 @@ impl ConflictAnalysis {
                 ana,
             } => {
                 self.build_block_body(*next);
-                self.conflict_all(&ana);
                 for block in sub_blocks.iter() {
                     self.build_basic_block(block.clone());
                 }
@@ -653,6 +665,12 @@ impl ConflictAnalysis {
     }
     fn build_basic_block(&mut self, b: BasicBlock<VarName, LiveSet>) {
         b.params.iter().for_each(|param| {
+            self.interference.insert_vertex(param.clone());
+            b.params.iter().for_each(|param2| {
+                if param != param2 {
+                    self.interference.insert_edge(param.clone(), param2.clone());
+                }
+            });
             self.order.push(param.clone());
         });
         self.build_block_body(b.body);
@@ -1963,4 +1981,28 @@ fn store_mem(dst: i32, reg: Reg) -> Instr {
         },
         Reg32::Reg(reg),
     ))
+}
+fn Get_param(op: Operation<VarName>) -> Vec<Immediate<VarName>> {
+    let mut vec = vec![];
+    match op {
+        Operation::Prim1(_, imm) => {
+            vec.push(imm.clone());
+        }
+        Operation::Prim2(_, imm1, imm2) => {
+            vec.push(imm1.clone());
+            vec.push(imm2.clone());
+        }
+        Operation::Immediate(imm) => {}
+        Operation::Call { fun, args } => {
+            vec = args.to_vec();
+        }
+        Operation::Load { addr, offset } => {
+            vec.push(addr.clone());
+            vec.push(offset.clone());
+        }
+        Operation::AllocateArray { len } => {
+            vec.push(len.clone());
+        }
+    };
+    vec
 }

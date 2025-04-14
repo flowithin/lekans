@@ -1,0 +1,23 @@
+extern f(a%0)
+extern snake_error(ecode%6, v%7)
+extern snake_new_array(len%8)
+fun entry(_%16):
+  br entry#0(_%16)
+block entry#0(_%1):
+  w%2 = 34
+  x%3 = 6
+  add_0%14 = w%2
+  add_1%15 = 2
+  assertInt(add_1%15)
+  assertInt(add_0%14)
+  y%4 = add_0%14 + add_1%15
+  f_0%13 = x%3
+  z%5 = f(f_0%13)
+  mul_0%9 = z%5
+  mul_1%10 = y%4
+  assertInt(mul_1%10)
+  assertInt(mul_0%9)
+  half%12 = mul_0%9 >> 1
+  result%11 = half%12 * mul_1%10
+  ret result%11
+
