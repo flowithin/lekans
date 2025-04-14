@@ -26,14 +26,16 @@ pub struct LivenessAnalyzer {
 impl LivenessAnalyzer {
     pub fn new<T>(prog: &Program<VarName, T>) -> Self {
         fn find_names_prog<T>(
-            p: &Program<VarName, T>, blocks: &mut HashMap<BlockName, HashSet<VarName>>,
+            p: &Program<VarName, T>,
+            blocks: &mut HashMap<BlockName, HashSet<VarName>>,
         ) {
             for block in p.blocks.iter() {
                 find_names_basic_block(&block, blocks);
             }
         }
         fn find_names_block_body<T>(
-            b: &BlockBody<VarName, T>, blocks: &mut HashMap<BlockName, HashSet<VarName>>,
+            b: &BlockBody<VarName, T>,
+            blocks: &mut HashMap<BlockName, HashSet<VarName>>,
         ) {
             use BlockBody::*;
             match b {
@@ -43,7 +45,11 @@ impl LivenessAnalyzer {
                 | AssertLength { next, .. }
                 | AssertInBounds { next, .. }
                 | Store { next, .. } => find_names_block_body(next, blocks),
-                SubBlocks { blocks: sub_blocks, next, .. } => {
+                SubBlocks {
+                    blocks: sub_blocks,
+                    next,
+                    ..
+                } => {
                     for block in sub_blocks.iter() {
                         find_names_basic_block(&block, blocks);
                     }
@@ -52,14 +58,18 @@ impl LivenessAnalyzer {
             }
         }
         fn find_names_basic_block<T>(
-            b: &BasicBlock<VarName, T>, blocks: &mut HashMap<BlockName, HashSet<VarName>>,
+            b: &BasicBlock<VarName, T>,
+            blocks: &mut HashMap<BlockName, HashSet<VarName>>,
         ) {
             blocks.insert(b.label.clone(), HashSet::new());
             find_names_block_body(&b.body, blocks);
         }
         let mut previous = HashMap::new();
         find_names_prog(prog, &mut previous);
-        Self { previous, current: HashMap::new() }
+        Self {
+            previous,
+            current: HashMap::new(),
+        }
     }
 
     pub fn analyze<T>(mut self, prog: Program<VarName, T>) -> Program<VarName, LiveSet> {
@@ -70,13 +80,223 @@ impl LivenessAnalyzer {
         }
         prog
     }
+    pub fn get_ls(bbdy_ls: BlockBody<VarName, LiveSet>) -> LiveSet {
+        match bbdy_ls.clone() {
+            BlockBody::Terminator(_, ana) => ana.to_owned(),
+            BlockBody::Store { ana, .. }
+            | BlockBody::Operation { ana, .. }
+            | BlockBody::SubBlocks { ana, .. }
+            | BlockBody::AssertType { ana, .. }
+            | BlockBody::AssertLength { ana, .. }
+            | BlockBody::AssertInBounds { ana, .. } => ana.to_owned(),
+        }
+    }
+    pub fn analyze_block_body<T>(
+        &mut self,
+        b: &BlockBody<VarName, T>,
+    ) -> BlockBody<VarName, LiveSet> {
+        let mut ls = LiveSet::new();
+        let mut insert_var = |ls: &mut LiveSet, var: Immediate<VarName>| match var {
+            Immediate::Var(_var) => {
+                ls.insert(_var);
+            }
+            _ => {}
+        };
+        let mut union_blk = |ls: &mut LiveSet, target: &BlockName| {
+            if let Some(vars) = self.previous.get(target) {
+                for var in vars {
+                    ls.insert(var.clone());
+                }
+            }
+        };
+        match b {
+            BlockBody::Terminator(term, _) => match term {
+                Terminator::Return(r) => {
+                    insert_var(&mut ls, r.clone());
+                    BlockBody::Terminator(Terminator::Return(r.clone()), ls)
+                }
+                Terminator::Branch(Branch { target, args }) => {
+                    for arg in args {
+                        insert_var(&mut ls, arg.clone());
+                    }
+                    union_blk(&mut ls, target);
+                    BlockBody::Terminator(
+                        Terminator::Branch(Branch {
+                            target: target.clone(),
+                            args: args.to_vec(),
+                        }),
+                        ls,
+                    )
+                }
+                Terminator::ConditionalBranch { cond, thn, els } => {
+                    insert_var(&mut ls, cond.clone());
+                    union_blk(&mut ls, thn);
+                    union_blk(&mut ls, els);
+                    BlockBody::Terminator(
+                        Terminator::ConditionalBranch {
+                            cond: cond.clone(),
+                            thn: thn.clone(),
+                            els: els.clone(),
+                        },
+                        ls,
+                    )
+                }
+            },
+            BlockBody::Operation { dest, op, next, .. } => {
+                match op {
+                    Operation::Prim1(_, imm) => {
+                        insert_var(&mut ls, imm.clone());
+                    }
+                    Operation::Prim2(_, imm1, imm2) => {
+                        insert_var(&mut ls, imm1.clone());
+                        insert_var(&mut ls, imm2.clone());
+                    }
+                    Operation::Call { fun, args } => {
+                        for arg in args {
+                            insert_var(&mut ls, arg.clone());
+                        }
+                    }
+                    Operation::Load { addr, offset } => {
+                        insert_var(&mut ls, addr.clone());
+                        insert_var(&mut ls, offset.clone());
+                    }
+                    Operation::Immediate(imm) => {
+                        insert_var(&mut ls, imm.clone());
+                    }
+                    Operation::AllocateArray { len } => {
+                        insert_var(&mut ls, len.clone());
+                    }
+                }
+                let next_bbdy = self.analyze_block_body(next.clone());
+                let mut next_ls = Self::get_ls(next_bbdy.clone());
+                ls.append(&mut next_ls);
+                ls.remove(dest);
+                BlockBody::Operation {
+                    dest: dest.clone(),
+                    op: op.clone(),
+                    next: Box::new(next_bbdy),
+                    ana: ls,
+                }
+            }
+            BlockBody::AssertType { ty, arg, next, .. } => {
+                let next_bbdy = self.analyze_block_body(next.clone());
+                let mut next_ls = Self::get_ls(next_bbdy.clone());
+                ls.append(&mut next_ls);
+                insert_var(&mut ls, arg.clone());
+                BlockBody::AssertType {
+                    ty: ty.clone(),
+                    arg: arg.clone(),
+                    next: Box::new(next_bbdy),
+                    ana: ls,
+                }
+            }
+            BlockBody::AssertLength { len, next, .. } => {
+                let next_bbdy = self.analyze_block_body(next.clone());
+                let mut next_ls = Self::get_ls(next_bbdy.clone());
+                ls.append(&mut next_ls);
+                insert_var(&mut ls, len.clone());
+                BlockBody::AssertLength {
+                    len: len.clone(),
+                    next: Box::new(next_bbdy),
+                    ana: ls,
+                }
+            }
+            BlockBody::AssertInBounds {
+                bound, arg, next, ..
+            } => {
+                let next_bbdy = self.analyze_block_body(next.clone());
+                let mut next_ls = Self::get_ls(next_bbdy.clone());
+                ls.append(&mut next_ls);
+                insert_var(&mut ls, bound.clone());
+                insert_var(&mut ls, arg.clone());
+                BlockBody::AssertInBounds {
+                    bound: bound.clone(),
+                    arg: arg.clone(),
+                    next: Box::new(next_bbdy),
+                    ana: ls,
+                }
+            }
 
+            BlockBody::Store {
+                addr,
+                offset,
+                val,
+                next,
+                ..
+            } => {
+                let next_bbdy = self.analyze_block_body(next.clone());
+                let mut next_ls = Self::get_ls(next_bbdy.clone());
+                ls.append(&mut next_ls);
+                insert_var(&mut ls, addr.clone());
+                insert_var(&mut ls, offset.clone());
+                insert_var(&mut ls, val.clone());
+                BlockBody::Store {
+                    addr: addr.clone(),
+                    offset: offset.clone(),
+                    val: val.clone(),
+                    next: Box::new(next_bbdy),
+                    ana: ls,
+                }
+            }
+            BlockBody::SubBlocks {
+                blocks: sub_blocks,
+                next,
+                ..
+            } => BlockBody::SubBlocks {
+                blocks: sub_blocks
+                    .iter()
+                    .map(|block| {
+                        //if let Some(vars) = self.previous.get(&block.label) {
+                        //    for var in vars {
+                        //        ls.insert(var.clone());
+                        //    }
+                        //}
+                        self.analyze_basic_block(block)
+                    })
+                    .collect(),
+                next: Box::new(self.analyze_block_body(next)),
+                ana: ls,
+            },
+        }
+    }
+    fn analyze_basic_block<T>(
+        &mut self,
+        b: &BasicBlock<VarName, T>,
+    ) -> BasicBlock<VarName, LiveSet> {
+        let mut bbdy_ls = self.analyze_block_body(&b.body);
+        let mut ls = Self::get_ls(bbdy_ls.clone());
+        //for var in b.params.clone() {
+        //    ls.insert(var);
+        //}
+
+        let mut set: HashSet<VarName> = HashSet::new();
+        ls.iter().for_each(|var| {
+            set.insert(var.clone());
+        });
+        self.current.insert(b.label.clone(), set);
+        BasicBlock {
+            label: b.label.clone(),
+            params: b.params.clone(),
+            body: bbdy_ls,
+            ana: ls,
+        }
+    }
     /// Analyzes the program, filling in the live sets. Uses the
     /// information from self.previous for blocks in this round, but
     /// also sets the information in self.current for the result of
     /// this round.
     fn analyze_prog<T>(&mut self, prog: Program<VarName, T>) -> Program<VarName, LiveSet> {
-        todo!("LivenessAnalyzer::analyze_prog")
+        //this function will update self with each basic block
+
+        let mut prog_ls: Program<VarName, LiveSet> = Program {
+            externs: prog.externs,
+            funs: prog.funs,
+            blocks: vec![],
+        };
+        for block in prog.blocks {
+            prog_ls.blocks.push(self.analyze_basic_block(&block));
+        }
+        prog_ls
     }
 }
 
@@ -115,19 +335,35 @@ impl UnusedRemover {
     }
 
     pub fn run(&mut self, prog: Program<VarName, LiveSet>) -> Program<VarName, Nil> {
-        let Program { externs, funs, blocks } = prog;
+        let Program {
+            externs,
+            funs,
+            blocks,
+        } = prog;
         // first get all toplevel block parameters to be removed
         blocks.iter().for_each(|block| self.build_block(block));
         // then remove the parameters from the functions
         let funs = funs.into_iter().map(|fun| self.run_fun(fun)).collect();
         // finally remove proceed with the blocks,
         // knowing what to do with arguments of function calls
-        let blocks = blocks.into_iter().map(|block| self.run_block(block)).collect();
-        Program { externs, funs, blocks }
+        let blocks = blocks
+            .into_iter()
+            .map(|block| self.run_block(block))
+            .collect();
+        Program {
+            externs,
+            funs,
+            blocks,
+        }
     }
 
     fn build_block(&mut self, block: &BasicBlock<VarName, LiveSet>) {
-        let BasicBlock { label, params, body, .. } = block;
+        let BasicBlock {
+            label,
+            params,
+            body,
+            ..
+        } = block;
         let (unused, _) =
             self.trans_block_params(params.clone(), HashSet::from_iter(body.analysis()));
         self.params.insert(label.clone(), unused);
@@ -150,26 +386,28 @@ impl UnusedRemover {
     }
 
     fn trans_block_params(
-        &mut self, params: impl IntoIterator<Item = VarName>, live: HashSet<&VarName>,
+        &mut self,
+        params: impl IntoIterator<Item = VarName>,
+        live: HashSet<&VarName>,
     ) -> (HashSet<usize>, Vec<VarName>) {
         use itertools::{Either, Itertools as _};
         params
             .into_iter()
             .enumerate()
-            .map(
-                |(i, param)| {
-                    if live.contains(&param) {
-                        Either::Right(param)
-                    } else {
-                        Either::Left(i)
-                    }
-                },
-            )
+            .map(|(i, param)| {
+                if live.contains(&param) {
+                    Either::Right(param)
+                } else {
+                    Either::Left(i)
+                }
+            })
             .partition_map(|x| x)
     }
 
     fn trans_block_args(
-        &mut self, target: &BlockName, args: Vec<Immediate<VarName>>,
+        &mut self,
+        target: &BlockName,
+        args: Vec<Immediate<VarName>>,
     ) -> Vec<Immediate<VarName>> {
         let removed = &self.params[target];
         args.into_iter()
@@ -179,7 +417,12 @@ impl UnusedRemover {
     }
 
     fn run_fun(&mut self, fun: FunBlock<VarName>) -> FunBlock<VarName> {
-        let FunBlock { name, params, body: Branch { target, args }, .. } = fun;
+        let FunBlock {
+            name,
+            params,
+            body: Branch { target, args },
+            ..
+        } = fun;
         self.fun_to_block.insert(name.clone(), target.clone());
         let block_params = &self.params[&target];
         let params = params
@@ -195,23 +438,38 @@ impl UnusedRemover {
                 .filter_map(|(i, arg)| (!block_params.contains(&i)).then_some(arg))
                 .collect(),
         };
-        FunBlock { name, params, body, ..fun }
+        FunBlock {
+            name,
+            params,
+            body,
+            ..fun
+        }
     }
 
     fn run_block(&mut self, block: BasicBlock<VarName, LiveSet>) -> BasicBlock<VarName, Nil> {
-        let BasicBlock { label, params, body, .. } = block;
+        let BasicBlock {
+            label,
+            params,
+            body,
+            ..
+        } = block;
         let (unused, params) = self.trans_block_params(params, HashSet::from_iter(body.analysis()));
         self.params.insert(label.clone(), unused);
 
         let body = self.run_block_body(body);
-        BasicBlock { label, params, body, ana: Nil }
+        BasicBlock {
+            label,
+            params,
+            body,
+            ana: Nil,
+        }
     }
 
     fn run_block_body(&mut self, body: BlockBody<VarName, LiveSet>) -> BlockBody<VarName, Nil> {
-        let live: HashSet<_> = HashSet::from_iter(
-            body.successor()
-                .map_or_else(HashSet::new, |succ| succ.analysis().iter().cloned().collect()),
-        );
+        let live: HashSet<_> =
+            HashSet::from_iter(body.successor().map_or_else(HashSet::new, |succ| {
+                succ.analysis().iter().cloned().collect()
+            }));
         match body {
             BlockBody::Terminator(Terminator::Branch(Branch { target, args }), ..) => {
                 // check if we need to remove any arguments if it's a branch
@@ -249,8 +507,10 @@ impl UnusedRemover {
                 }
             }
             BlockBody::SubBlocks { blocks, next, .. } => {
-                let blocks: Vec<_> =
-                    blocks.into_iter().map(|block| self.run_block(block)).collect();
+                let blocks: Vec<_> = blocks
+                    .into_iter()
+                    .map(|block| self.run_block(block))
+                    .collect();
                 BlockBody::SubBlocks {
                     blocks,
                     next: Box::new(self.run_block_body(*next)),
@@ -268,13 +528,21 @@ impl UnusedRemover {
                 next: Box::new(self.run_block_body(*next)),
                 ana: Nil,
             },
-            BlockBody::AssertInBounds { bound, arg, next, .. } => BlockBody::AssertInBounds {
+            BlockBody::AssertInBounds {
+                bound, arg, next, ..
+            } => BlockBody::AssertInBounds {
                 bound,
                 arg,
                 next: Box::new(self.run_block_body(*next)),
                 ana: Nil,
             },
-            BlockBody::Store { addr, offset, val, next, .. } => BlockBody::Store {
+            BlockBody::Store {
+                addr,
+                offset,
+                val,
+                next,
+                ..
+            } => BlockBody::Store {
                 addr,
                 offset,
                 val,
@@ -323,15 +591,84 @@ pub struct ConflictAnalysis {
 
 impl ConflictAnalysis {
     pub fn new(prog: &Program<VarName, LiveSet>) -> Self {
-        let mut analysis =
-            ConflictAnalysis { interference: Graph::new(), order: PerfectEliminationOrder::new() };
+        let mut analysis = ConflictAnalysis {
+            interference: Graph::new(),
+            order: PerfectEliminationOrder::new(),
+        };
         analysis.build_prog(prog);
         analysis
     }
 
+    fn push_order(&mut self, imm: Immediate<VarName>) {
+        match imm {
+            Immediate::Var(var) => {
+                self.order.push(var.clone());
+            }
+            _ => {}
+        }
+    }
+
+    fn conflict_all(&mut self, ana: &LiveSet) {
+        for l1 in ana {
+            for l2 in ana {
+                if l1 != l2 {
+                    self.interference.insert_edge(l1.clone(), l2.clone());
+                }
+            }
+            self.interference.insert_vertex(l1.clone());
+        }
+    }
+    fn build_block_body(&mut self, b: BlockBody<VarName, LiveSet>) {
+        use BlockBody::*;
+        match b {
+            Operation {
+                dest, next, ana, ..
+            } => {
+                self.order.push(dest);
+                self.build_block_body(*next);
+                self.conflict_all(&ana);
+            }
+            Terminator(_, ana) => {
+                self.conflict_all(&ana);
+            }
+            AssertType { next, ana, .. }
+            | AssertLength { next, ana, .. }
+            | AssertInBounds { next, ana, .. }
+            | Store { next, ana, .. } => {
+                self.conflict_all(&ana);
+                self.build_block_body(*next);
+            }
+            SubBlocks {
+                blocks: sub_blocks,
+                next,
+                ana,
+            } => {
+                self.build_block_body(*next);
+                self.conflict_all(&ana);
+                for block in sub_blocks.iter() {
+                    self.build_basic_block(block.clone());
+                }
+            }
+        }
+    }
+    fn build_basic_block(&mut self, b: BasicBlock<VarName, LiveSet>) {
+        b.params.iter().for_each(|param| {
+            self.order.push(param.clone());
+        });
+        self.build_block_body(b.body);
+    }
     // Traverse the program, which is annotated with liveness information, building up the interference graph as well as the elimination order.
-    fn build_prog(&mut self, Program { externs: _, funs: _, blocks }: &Program<VarName, LiveSet>) {
-        todo!("implement ConflictAnalysis")
+    fn build_prog(
+        &mut self,
+        Program {
+            externs: _,
+            funs: _,
+            blocks,
+        }: &Program<VarName, LiveSet>,
+    ) {
+        for block in blocks {
+            self.build_basic_block(block.clone());
+        }
     }
 }
 
@@ -368,9 +705,46 @@ impl RegisterAllocator {
     // all_regs: the registers available to use as colors
     // log: if true, then the verbose flag is set, and feel free to print debugging information
     fn chaitin(
-        &mut self, mut g: Graph<VarName>, mut remaining: Vec<VarName>, all_regs: &[Reg], log: bool,
+        &mut self,
+        mut g: Graph<VarName>,
+        mut remaining: Vec<VarName>,
+        all_regs: &[Reg],
+        log: bool,
     ) {
-        todo!("implement Chaitin's algorithm for graph coloring")
+        //first color the rest of the graph
+        let last = remaining.last().unwrap().clone();
+        let mut g1 = g.clone();
+        g1.remove_vertex(&last);
+        if remaining.len() > 1 {
+            remaining.pop();
+            self.chaitin(g1.clone(), remaining.clone(), all_regs, log);
+        }
+        //println!("{:?}", g1);
+        let mut av_reg: Vec<Reg> = vec![];
+        //println!("last: {:?}", last);
+        //println!("remaining: {:?}", remaining);
+        for vertex in remaining {
+            if g.contains_edge(&vertex, &last) {
+                //println!("vertex: {:?}, last: {:?}", vertex, last);
+                if let Some(reg) = self.assignment.get(&vertex).unwrap().as_reg() {
+                    //println!("vertex: {:?}, reg: {:?}", vertex, reg);
+                    av_reg.push(reg);
+                }
+            }
+        }
+        for reg in all_regs {
+            if !av_reg.contains(reg) {
+                self.assignment
+                    .insert(last.clone(), Allocation::Reg(reg.clone()));
+                break;
+            }
+        }
+        //spill
+        if !self.assignment.contains_key(&last) {
+            let spill = self.spill();
+            self.assignment
+                .insert(last.clone(), Allocation::Spill(spill));
+        }
     }
 
     pub fn graph_color(&mut self, conflicts: ConflictAnalysis, registers: &[Reg], log: bool) {
@@ -386,7 +760,12 @@ impl RegisterAllocator {
             log,
         );
         // Then, spill any used non-volatile registers
-        let assns: Vec<_> = self.assignment.0.iter().map(|(_, loc)| loc.clone()).collect();
+        let assns: Vec<_> = self
+            .assignment
+            .0
+            .iter()
+            .map(|(_, loc)| loc.clone())
+            .collect();
         for loc in assns.iter() {
             match loc {
                 Allocation::Reg(reg) => {
@@ -479,8 +858,15 @@ impl Reg {
         Reg::R15,
     ];
 
-    pub const ALLOCATABLE_VOLATILE: [Reg; 7] =
-        [Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9, Reg::R11];
+    pub const ALLOCATABLE_VOLATILE: [Reg; 7] = [
+        Reg::Rdi,
+        Reg::Rsi,
+        Reg::Rdx,
+        Reg::Rcx,
+        Reg::R8,
+        Reg::R9,
+        Reg::R11,
+    ];
 
     pub const ALLOCATABLE_NON_VOLATILE: [Reg; 6] =
         [Reg::Rbx, Reg::Rbp, Reg::R12, Reg::R13, Reg::R14, Reg::R15];
@@ -522,9 +908,13 @@ impl BinArgs {
         match src {
             Allocation::Reg(src) if src == dst => unreachable!(),
             Allocation::Reg(src) => BinArgs::ToReg(dst, Arg32::Reg(src)),
-            Allocation::Spill(spill) => {
-                BinArgs::ToReg(dst, Arg32::Mem(MemRef { reg: Reg::Rsp, offset: -8 * spill }))
-            }
+            Allocation::Spill(spill) => BinArgs::ToReg(
+                dst,
+                Arg32::Mem(MemRef {
+                    reg: Reg::Rsp,
+                    offset: -8 * spill,
+                }),
+            ),
         }
     }
 
@@ -537,9 +927,13 @@ impl BinArgs {
         match dst {
             Allocation::Reg(dst) if dst == src => unreachable!(),
             Allocation::Reg(dst) => BinArgs::ToReg(dst, Arg32::Reg(src)),
-            Allocation::Spill(spill) => {
-                BinArgs::ToMem(MemRef { reg: Reg::Rsp, offset: -8 * spill }, Reg32::Reg(src))
-            }
+            Allocation::Spill(spill) => BinArgs::ToMem(
+                MemRef {
+                    reg: Reg::Rsp,
+                    offset: -8 * spill,
+                },
+                Reg32::Reg(src),
+            ),
         }
     }
 }
@@ -554,9 +948,13 @@ impl MovArgs {
         match dst {
             Allocation::Reg(dst) if dst == src => unreachable!(),
             Allocation::Reg(dst) => MovArgs::ToReg(dst, Arg64::Reg(src)),
-            Allocation::Spill(spill) => {
-                MovArgs::ToMem(MemRef { reg: Reg::Rsp, offset: -8 * spill }, Reg32::Reg(src))
-            }
+            Allocation::Spill(spill) => MovArgs::ToMem(
+                MemRef {
+                    reg: Reg::Rsp,
+                    offset: -8 * spill,
+                },
+                Reg32::Reg(src),
+            ),
         }
     }
 }
@@ -612,7 +1010,10 @@ pub struct Emitter {
 
 impl From<RegisterAllocator> for Emitter {
     fn from(allocation: RegisterAllocator) -> Self {
-        Emitter { instrs: Vec::new(), allocation }
+        Emitter {
+            instrs: Vec::new(),
+            allocation,
+        }
     }
 }
 
@@ -630,7 +1031,10 @@ impl Emitter {
         match self.allocation.assignment.get(x) {
             Some(a) => *a,
             None => {
-                unreachable!("Didn't find {} in allocation {}", x, self.allocation.assignment);
+                unreachable!(
+                    "Didn't find {} in allocation {}",
+                    x, self.allocation.assignment
+                );
             }
         }
     }
@@ -668,7 +1072,11 @@ impl Emitter {
     }
 
     pub fn emit_prog(&mut self, prog: &Program<VarName, LiveSet>) {
-        let Program { externs, funs, blocks } = prog;
+        let Program {
+            externs,
+            funs,
+            blocks,
+        } = prog;
         // emit text section
         self.emit(Instr::Section(".text".to_string()));
         self.emit(Instr::Global("entry".to_string()));
@@ -681,11 +1089,17 @@ impl Emitter {
         // emit error handlers
         for i in 0..SnakeErr::COUNT {
             self.emit(Instr::Label(SnakeErr::from(i).to_string()));
-            self.emit(Instr::Mov(MovArgs::ToReg(Reg::Rdi, Arg64::Signed(i as i64))));
+            self.emit(Instr::Mov(MovArgs::ToReg(
+                Reg::Rdi,
+                Arg64::Signed(i as i64),
+            )));
             match SnakeErr::from(i) {
                 SnakeErr::NegativeLength | SnakeErr::IndexOutOfBounds => {
                     // rax = rax << 1 (encode as snake integer)
-                    self.emit(Instr::Sal(ShArgs { reg: Reg::Rax, by: 1 }));
+                    self.emit(Instr::Sal(ShArgs {
+                        reg: Reg::Rax,
+                        by: 1,
+                    }));
                 }
                 SnakeErr::ArithmeticOverflow
                 | SnakeErr::ExpectedNum
@@ -734,7 +1148,9 @@ impl Emitter {
 
         // save the non-volatile registers that are used
         if cfg!(debug_assertions) && !self.allocation.callee_saves.is_empty() {
-            self.emit(Instr::Comment("    saving non-volatile registers..".to_string()));
+            self.emit(Instr::Comment(
+                "    saving non-volatile registers..".to_string(),
+            ));
         }
         for (reg, slot) in self.allocation.callee_saves.clone().into_iter() {
             if cfg!(debug_assertions) {
@@ -798,7 +1214,9 @@ impl Emitter {
                     self.emit_block(block, block_env.clone());
                 }
             }
-            BlockBody::AssertType { ty, arg: of, next, .. } => {
+            BlockBody::AssertType {
+                ty, arg: of, next, ..
+            } => {
                 if cfg!(debug_assertions) {
                     self.emit(Instr::Comment(format!("    assert {} of type {}", of, ty)));
                 }
@@ -807,9 +1225,15 @@ impl Emitter {
                 // rax = of
                 self.emit_imm(Allocation::Reg(Reg::Rax), of);
                 // rax = rax & mask
-                self.emit(Instr::And(BinArgs::ToReg(Reg::Rax, Arg32::Signed(mask as i32))));
+                self.emit(Instr::And(BinArgs::ToReg(
+                    Reg::Rax,
+                    Arg32::Signed(mask as i32),
+                )));
                 // cmp rax, tag
-                self.emit(Instr::Cmp(BinArgs::ToReg(Reg::Rax, Arg32::Signed(tag as i32))));
+                self.emit(Instr::Cmp(BinArgs::ToReg(
+                    Reg::Rax,
+                    Arg32::Signed(tag as i32),
+                )));
                 // sub-optimal but it works and the compiler is cleaner
                 // rax = of (mov will not alter the flag registers)
                 self.emit_imm(Allocation::Reg(Reg::Rax), of);
@@ -827,17 +1251,28 @@ impl Emitter {
             }
             BlockBody::AssertLength { len, next, .. } => {
                 if cfg!(debug_assertions) {
-                    self.emit(Instr::Comment(format!("    assert length {} is non-negative", len)));
+                    self.emit(Instr::Comment(format!(
+                        "    assert length {} is non-negative",
+                        len
+                    )));
                 }
                 // rax = len
                 self.emit_imm(Allocation::Reg(Reg::Rax), len);
                 // cmp rax, 0
                 self.emit(Instr::Cmp(BinArgs::ToReg(Reg::Rax, Arg32::Signed(0))));
                 // raise error if negative, assuming the argument is stored in rax
-                self.emit(Instr::JCC(ConditionCode::L, SnakeErr::NegativeLength.to_string()));
+                self.emit(Instr::JCC(
+                    ConditionCode::L,
+                    SnakeErr::NegativeLength.to_string(),
+                ));
                 self.emit_block_body(next, block_env);
             }
-            BlockBody::AssertInBounds { bound, arg: of, next, .. } => {
+            BlockBody::AssertInBounds {
+                bound,
+                arg: of,
+                next,
+                ..
+            } => {
                 if cfg!(debug_assertions) {
                     self.emit(Instr::Comment(format!(
                         "    assert {} is in bounds [0, {})",
@@ -849,14 +1284,29 @@ impl Emitter {
                 // cmp rax, 0
                 self.emit(Instr::Cmp(BinArgs::ToReg(Reg::Rax, Arg32::Signed(0))));
                 // raise error if negative, assuming the argument is stored in rax
-                self.emit(Instr::JCC(ConditionCode::L, SnakeErr::IndexOutOfBounds.to_string()));
+                self.emit(Instr::JCC(
+                    ConditionCode::L,
+                    SnakeErr::IndexOutOfBounds.to_string(),
+                ));
                 // cmp bound, of (bound is never constant and is never temporary)
-                self.emit(Instr::Cmp(BinArgs::to_alloc(self.resolve_to_alloc(bound), Reg::Rax)));
+                self.emit(Instr::Cmp(BinArgs::to_alloc(
+                    self.resolve_to_alloc(bound),
+                    Reg::Rax,
+                )));
                 // raise error if bound <= of
-                self.emit(Instr::JCC(ConditionCode::LE, SnakeErr::IndexOutOfBounds.to_string()));
+                self.emit(Instr::JCC(
+                    ConditionCode::LE,
+                    SnakeErr::IndexOutOfBounds.to_string(),
+                ));
                 self.emit_block_body(next, block_env);
             }
-            BlockBody::Store { addr, offset: off, val, next, .. } => {
+            BlockBody::Store {
+                addr,
+                offset: off,
+                val,
+                next,
+                ..
+            } => {
                 if cfg!(debug_assertions) {
                     self.emit(Instr::Comment(format!(
                         "    store [{} + {} * 8] = {}",
@@ -868,13 +1318,19 @@ impl Emitter {
                 // rax = 8 * rax
                 self.emit(Instr::IMul(BinArgs::ToReg(Reg::Rax, Arg32::Signed(8))));
                 // rax = rax + addr (addr is never constant and is never temporary)
-                self.emit(Instr::Add(BinArgs::from_alloc(Reg::Rax, self.resolve_to_alloc(addr))));
+                self.emit(Instr::Add(BinArgs::from_alloc(
+                    Reg::Rax,
+                    self.resolve_to_alloc(addr),
+                )));
                 // finally meeting our Thermopylae - only one temporary register doesn't work >_<
                 // r10 = val
                 self.emit_imm(Allocation::Reg(Reg::R10), val);
                 // mov [rax], r10
                 self.emit(Instr::Mov(MovArgs::ToMem(
-                    MemRef { reg: Reg::Rax, offset: 0 },
+                    MemRef {
+                        reg: Reg::Rax,
+                        offset: 0,
+                    },
                     Reg32::Reg(Reg::R10),
                 )));
                 self.emit_block_body(next, block_env);
@@ -890,7 +1346,9 @@ impl Emitter {
                 self.emit_imm(Allocation::Reg(Reg::Rax), imm);
                 // restore callee-saved registers
                 if cfg!(debug_assertions) && !self.allocation.callee_saves.is_empty() {
-                    self.emit(Instr::Comment(format!("    restoring non-volatile registers..")));
+                    self.emit(Instr::Comment(format!(
+                        "    restoring non-volatile registers.."
+                    )));
                 }
                 for (reg, slot) in self.allocation.callee_saves.clone() {
                     if cfg!(debug_assertions) {
@@ -1040,7 +1498,10 @@ impl Emitter {
                         "    call {} = {}({})",
                         dest,
                         fun,
-                        args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>().join(", ")
+                        args.iter()
+                            .map(|arg| arg.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     )));
                 }
                 // emit the call, with the result written to dest
@@ -1073,11 +1534,17 @@ impl Emitter {
                 // rax = 8 * rax
                 self.emit(Instr::IMul(BinArgs::ToReg(Reg::Rax, Arg32::Signed(8))));
                 // rax = rax + addr (addr is never constant and is never temporary)
-                self.emit(Instr::Add(BinArgs::from_alloc(Reg::Rax, self.resolve_to_alloc(addr))));
+                self.emit(Instr::Add(BinArgs::from_alloc(
+                    Reg::Rax,
+                    self.resolve_to_alloc(addr),
+                )));
                 // mov rax, [rax]
                 self.emit(Instr::Mov(MovArgs::ToReg(
                     Reg::Rax,
-                    Arg64::Mem(MemRef { reg: Reg::Rax, offset: 0 }),
+                    Arg64::Mem(MemRef {
+                        reg: Reg::Rax,
+                        offset: 0,
+                    }),
                 )));
                 // dest = rax
                 self.emit_reg_to_alloc(self.resolve(dest), Reg::Rax);
@@ -1087,11 +1554,17 @@ impl Emitter {
 
     fn emit_arith(&mut self, op: Instr) {
         self.emit(op);
-        self.emit(Instr::JCC(ConditionCode::O, SnakeErr::ArithmeticOverflow.to_string()));
+        self.emit(Instr::JCC(
+            ConditionCode::O,
+            SnakeErr::ArithmeticOverflow.to_string(),
+        ));
     }
 
     fn emit_stack_aligned_call(
-        &mut self, dest: Allocation, fun: FunName, args: &[Immediate<VarName>],
+        &mut self,
+        dest: Allocation,
+        fun: FunName,
+        args: &[Immediate<VarName>],
         after_live: &LiveSet,
     ) {
         // 1. Save the live volatiles
@@ -1104,7 +1577,9 @@ impl Emitter {
             .collect();
         if cfg!(debug_assertions) {
             if !caller_saves.is_empty() {
-                self.emit(Instr::Comment("    saving volatile registers..".to_string()));
+                self.emit(Instr::Comment(
+                    "    saving volatile registers..".to_string(),
+                ));
             }
         }
         for (i, r) in caller_saves.iter().enumerate() {
@@ -1137,20 +1612,31 @@ impl Emitter {
         for (i, _) in args.iter().skip(Reg::ARGS.len()).enumerate() {
             dests.push(Allocation::Spill(frame_size - i as i32));
         }
-        self.emit_simultaneous_move(dests, args.iter().map(|arg| self.resolve_imm(arg)).collect());
+        self.emit_simultaneous_move(
+            dests,
+            args.iter().map(|arg| self.resolve_imm(arg)).collect(),
+        );
 
         // 3. Save the locals
-        self.emit(Instr::Sub(BinArgs::ToReg(Reg::Rsp, Arg32::Signed(8 * frame_size))));
+        self.emit(Instr::Sub(BinArgs::ToReg(
+            Reg::Rsp,
+            Arg32::Signed(8 * frame_size),
+        )));
         // 4. call
         self.emit(Instr::Call(fun.to_string()));
         // 5. Restore rsp
-        self.emit(Instr::Add(BinArgs::ToReg(Reg::Rsp, Arg32::Signed(8 * frame_size))));
+        self.emit(Instr::Add(BinArgs::ToReg(
+            Reg::Rsp,
+            Arg32::Signed(8 * frame_size),
+        )));
         // 6. mov result to destination
         self.emit_resolved_imm(dest, Immediate::Var(Allocation::Reg(Reg::Rax)));
         // 7. Restore live volatiles
         if cfg!(debug_assertions) {
             if !caller_saves.is_empty() {
-                self.emit(Instr::Comment("    restoring volatile registers..".to_string()));
+                self.emit(Instr::Comment(
+                    "    restoring volatile registers..".to_string(),
+                ));
             }
         }
         for (i, reg) in caller_saves.iter().enumerate() {
@@ -1168,7 +1654,9 @@ impl Emitter {
     // params are destinations..
     // ..and args are sources
     fn emit_simultaneous_move(
-        &mut self, params: Vec<Allocation>, args: Vec<Immediate<Allocation>>,
+        &mut self,
+        params: Vec<Allocation>,
+        args: Vec<Immediate<Allocation>>,
     ) {
         assert_eq!(params.len(), args.len());
 
@@ -1236,7 +1724,10 @@ impl Emitter {
                 outward.entry(*param).or_insert_with(BTreeSet::new);
                 match arg {
                     Immediate::Var(src) => {
-                        outward.entry(*src).or_insert_with(BTreeSet::new).insert(param);
+                        outward
+                            .entry(*src)
+                            .or_insert_with(BTreeSet::new)
+                            .insert(param);
                     }
                     _ => {}
                 }
@@ -1308,7 +1799,9 @@ impl Emitter {
                 seq.push(start_dst);
                 let mut next = start_src;
                 loop {
-                    let Immediate::Var(src) = next else { unreachable!() };
+                    let Immediate::Var(src) = next else {
+                        unreachable!()
+                    };
                     seq.push(src);
                     match cycles.remove(&src) {
                         Some(arg) => next = arg,
@@ -1320,7 +1813,10 @@ impl Emitter {
                 if cfg!(debug_assertions) {
                     self.emit(Instr::Comment(format!(
                         "        {}",
-                        seq.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(" <- ")
+                        seq.iter()
+                            .map(|v| v.to_string())
+                            .collect::<Vec<_>>()
+                            .join(" <- ")
                     )));
                 }
                 seqs.push(seq);
@@ -1340,19 +1836,29 @@ impl Emitter {
                     use itertools::Itertools as _;
                     let mut iter = seq.into_iter();
                     // we basically remove and ignore the start of the cycle
-                    let Some(..) = iter.next() else { unreachable!() };
+                    let Some(..) = iter.next() else {
+                        unreachable!()
+                    };
                     for (a, b) in iter.tuple_windows() {
-                        let Allocation::Reg(a) = a else { unreachable!() };
-                        let Allocation::Reg(b) = b else { unreachable!() };
+                        let Allocation::Reg(a) = a else {
+                            unreachable!()
+                        };
+                        let Allocation::Reg(b) = b else {
+                            unreachable!()
+                        };
                         self.emit(Instr::Xchg(a, b));
                     }
                 } else {
                     // otherwise, use r10 as a temporary swap register for efficiency
                     let mut iter = seq.into_iter();
                     // we basically remove and ignore the start of the cycle
-                    let Some(..) = iter.next() else { unreachable!() };
+                    let Some(..) = iter.next() else {
+                        unreachable!()
+                    };
                     // ..and begin with the second to last element
-                    let Some(mut curr) = iter.next() else { unreachable!() };
+                    let Some(mut curr) = iter.next() else {
+                        unreachable!()
+                    };
                     // (must) use r10 as a temporary register;
                     // not using rax because it's used by emit_alloc_to_alloc
                     // r10 = curr
@@ -1389,11 +1895,17 @@ impl Emitter {
                 // first move the spilled value to rax
                 self.emit(Instr::Mov(MovArgs::ToReg(
                     Reg::Rax,
-                    Arg64::Mem(MemRef { reg: Reg::Rsp, offset: -8 * src }),
+                    Arg64::Mem(MemRef {
+                        reg: Reg::Rsp,
+                        offset: -8 * src,
+                    }),
                 )));
                 // then move rax to the destination
                 self.emit(Instr::Mov(MovArgs::ToMem(
-                    MemRef { reg: Reg::Rsp, offset: -8 * slot },
+                    MemRef {
+                        reg: Reg::Rsp,
+                        offset: -8 * slot,
+                    },
                     Reg32::Reg(Reg::Rax),
                 )));
             }
@@ -1432,11 +1944,23 @@ fn load_signed(reg: Reg, val: i64) -> Instr {
 
 /// Put the value of a memory reference into a register.
 fn load_mem(reg: Reg, src: i32) -> Instr {
-    Instr::Mov(MovArgs::ToReg(reg, Arg64::Mem(MemRef { reg: Reg::Rsp, offset: -8 * src })))
+    Instr::Mov(MovArgs::ToReg(
+        reg,
+        Arg64::Mem(MemRef {
+            reg: Reg::Rsp,
+            offset: -8 * src,
+        }),
+    ))
 }
 
 /// Flush the value of a register into a memory reference.
 /// the dst is viewed as a negative offset with a stride of 8.
 fn store_mem(dst: i32, reg: Reg) -> Instr {
-    Instr::Mov(MovArgs::ToMem(MemRef { reg: Reg::Rsp, offset: -8 * dst }, Reg32::Reg(reg)))
+    Instr::Mov(MovArgs::ToMem(
+        MemRef {
+            reg: Reg::Rsp,
+            offset: -8 * dst,
+        },
+        Reg32::Reg(reg),
+    ))
 }
