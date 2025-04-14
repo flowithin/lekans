@@ -244,21 +244,27 @@ impl LivenessAnalyzer {
                 blocks: sub_blocks,
                 next,
                 ..
-            } => BlockBody::SubBlocks {
-                blocks: sub_blocks
-                    .iter()
-                    .map(|block| {
-                        //if let Some(vars) = self.previous.get(&block.label) {
-                        //    for var in vars {
-                        //        ls.insert(var.clone());
-                        //    }
-                        //}
-                        self.analyze_basic_block(block)
-                    })
-                    .collect(),
-                next: Box::new(self.analyze_block_body(next)),
-                ana: ls,
-            },
+            } => {
+                let next_bbdy = self.analyze_block_body(next.clone());
+                let mut next_ls = Self::get_ls(next_bbdy.clone());
+                ls.append(&mut next_ls);
+                BlockBody::SubBlocks {
+                    blocks: sub_blocks
+                        .iter()
+                        .map(|block| {
+                            //subblock not branching to any
+                            //if let Some(vars) = self.previous.get(&block.label) {
+                            //    for var in vars {
+                            //        ls.insert(var.clone());
+                            //    }
+                            //}
+                            self.analyze_basic_block(block)
+                        })
+                        .collect(),
+                    next: Box::new(self.analyze_block_body(next)),
+                    ana: ls,
+                }
+            }
         }
     }
     fn analyze_basic_block<T>(
@@ -733,8 +739,8 @@ impl RegisterAllocator {
         let last = remaining.last().unwrap().clone();
         let mut g1 = g.clone();
         g1.remove_vertex(&last);
-        if remaining.len() > 1 {
-            remaining.pop();
+        remaining.pop();
+        if remaining.len() > 0 {
             self.chaitin(g1.clone(), remaining.clone(), all_regs, log);
         }
         //println!("{:?}", g1);
