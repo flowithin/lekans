@@ -1,0 +1,10 @@
+def main(x):
+def f(x, y, z):
+def loop(i, a):
+if i == 0 :
+a * z
+else :
+loop(i - 1, a + x)
+in
+loop(y, 0)
+in f(0, 1, 1)

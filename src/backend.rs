@@ -273,9 +273,9 @@ impl LivenessAnalyzer {
     ) -> BasicBlock<VarName, LiveSet> {
         let mut bbdy_ls = self.analyze_block_body(&b.body);
         let mut ls = Self::get_ls(bbdy_ls.clone());
-        //for var in b.params.clone() {
-        //    ls.insert(var);
-        //}
+        for var in b.params.clone() {
+            ls.remove(&var);
+        }
 
         let mut set: HashSet<VarName> = HashSet::new();
         ls.iter().for_each(|var| {
@@ -641,6 +641,7 @@ impl ConflictAnalysis {
                 Get_param(op.clone()).iter().for_each(|var| {
                     if let Immediate::Var(var) = var {
                         if next.analysis().contains(var) {
+                            //if still alive
                             self.interference.insert_edge(var.clone(), dest.clone());
                         }
                     }
@@ -666,6 +667,7 @@ impl ConflictAnalysis {
                 for block in sub_blocks.iter() {
                     self.build_basic_block(block.clone());
                 }
+                self.conflict_all(&ana);
             }
         }
     }
@@ -679,6 +681,7 @@ impl ConflictAnalysis {
             });
             self.order.push(param.clone());
         });
+        self.conflict_all(&b.ana);
         self.build_block_body(b.body);
     }
     // Traverse the program, which is annotated with liveness information, building up the interference graph as well as the elimination order.

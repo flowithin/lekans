@@ -1,0 +1,8 @@
+def main(x):
+let y = x[0]
+in
+if x : x else : 
+let z = x
+in 
+x
+

@@ -1,0 +1,18 @@
+extern snake_error(ecode%2, v%3)
+extern snake_new_array(len%4)
+fun entry(x%13):
+  br entry#0(x%13)
+block entry#0(x%0):
+  arrayGet_1%8 = 0
+  assertInt(arrayGet_1%8)
+  assertArray(x%0)
+  arr%9 = x%0 ^ 3
+  len%10 = load(arr%9, 0)
+  idx%11 = arrayGet_1%8 >> 1
+  assertInBounds(len%10, idx%11)
+  off%12 = idx%11 + 1
+  x%1 = load(arr%9, off%12)
+  assertInt(x%1)
+  result%6 = x%1 + 2
+  ret result%6
+

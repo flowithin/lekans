@@ -1,7 +1,7 @@
 #![allow(static_mut_refs)]
 
-mod extensions;
 mod common;
+mod extensions;
 use common::*;
 use extensions::sprint_snake_val;
 
@@ -19,8 +19,15 @@ extern "sysv64" fn print(val: SnakeValue) -> SnakeValue {
 
 #[export_name = "\x01big_fun_nine"]
 extern "sysv64" fn big_fun_nine(
-    x1: SnakeValue, x2: SnakeValue, x3: SnakeValue, x4: SnakeValue, x5: SnakeValue, x6: SnakeValue,
-    x7: SnakeValue, x8: SnakeValue, x9: SnakeValue,
+    x1: SnakeValue,
+    x2: SnakeValue,
+    x3: SnakeValue,
+    x4: SnakeValue,
+    x5: SnakeValue,
+    x6: SnakeValue,
+    x7: SnakeValue,
+    x8: SnakeValue,
+    x9: SnakeValue,
 ) -> SnakeValue {
     println!(
         "x1: {}\nx2: {}\nx3: {}\nx4: {}\nx5: {}\nx6: {}\nx7: {}\nx8: {}\nx9: {}",

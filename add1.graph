@@ -1,0 +1,95 @@
+[[lowering]]
+extern snake_error(ecode%2, v%3)
+extern snake_new_array(len%4)
+fun entry(x%13):
+  br entry#0(x%13)
+block entry#0(x%0):
+  arrayGet_0%7 = x%0
+  arrayGet_1%8 = 0
+  assertInt(arrayGet_1%8)
+  assertArray(arrayGet_0%7)
+  arr%9 = arrayGet_0%7 ^ 3
+  len%10 = load(arr%9, 0)
+  idx%11 = arrayGet_1%8 >> 1
+  assertInBounds(len%10, idx%11)
+  off%12 = idx%11 + 1
+  x%1 = load(arr%9, off%12)
+  add1_0%5 = x%1
+  assertInt(add1_0%5)
+  result%6 = add1_0%5 + 2
+  ret result%6
+
+[[copy propagation]]
+extern snake_error(ecode%2, v%3)
+extern snake_new_array(len%4)
+fun entry(x%13):
+  br entry#0(x%13)
+block entry#0(x%0):
+  arrayGet_1%8 = 0
+  assertInt(arrayGet_1%8)
+  assertArray(x%0)
+  arr%9 = x%0 ^ 3
+  len%10 = load(arr%9, 0)
+  idx%11 = arrayGet_1%8 >> 1
+  assertInBounds(len%10, idx%11)
+  off%12 = idx%11 + 1
+  x%1 = load(arr%9, off%12)
+  assertInt(x%1)
+  result%6 = x%1 + 2
+  ret result%6
+
+[[liveness analysis (final)]]
+extern snake_error(ecode%2, v%3)
+extern snake_new_array(len%4)
+fun entry(x%13):
+  br entry#0(x%13)
+block entry#0 [x%0] (x%0):
+  [x%0]
+  arrayGet_1%8 = 0
+  [x%0, arrayGet_1%8]
+  assertInt(arrayGet_1%8)
+  [x%0, arrayGet_1%8]
+  assertArray(x%0)
+  [x%0, arrayGet_1%8]
+  arr%9 = x%0 ^ 3
+  [arrayGet_1%8, arr%9]
+  len%10 = load(arr%9, 0)
+  [arrayGet_1%8, arr%9, len%10]
+  idx%11 = arrayGet_1%8 >> 1
+  [arr%9, len%10, idx%11]
+  assertInBounds(len%10, idx%11)
+  [arr%9, idx%11]
+  off%12 = idx%11 + 1
+  [arr%9, off%12]
+  x%1 = load(arr%9, off%12)
+  [x%1]
+  assertInt(x%1)
+  [x%1]
+  result%6 = x%1 + 2
+  [result%6]
+  ret result%6
+
+[[interference graph]]
+vertex x%0
+vertex x%1
+vertex result%6
+vertex arrayGet_1%8
+vertex arr%9
+vertex len%10
+vertex idx%11
+vertex off%12
+edge x%0 arrayGet_1%8
+edge arrayGet_1%8 x%0
+edge arrayGet_1%8 arr%9
+edge arrayGet_1%8 len%10
+edge arr%9 arrayGet_1%8
+edge arr%9 len%10
+edge arr%9 idx%11
+edge arr%9 off%12
+edge len%10 arrayGet_1%8
+edge len%10 arr%9
+edge len%10 idx%11
+edge idx%11 arr%9
+edge idx%11 len%10
+edge off%12 arr%9
+

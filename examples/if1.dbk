@@ -1,0 +1,11 @@
+def main(x):
+let y = x[0]
+in
+if x : let z = x + y
+in
+main(z)
+else : 
+let z = x
+in 
+z + x
+
