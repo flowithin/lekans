@@ -2001,7 +2001,9 @@ fn Get_param(op: Operation<VarName>) -> Vec<Immediate<VarName>> {
             vec.push(imm1.clone());
             vec.push(imm2.clone());
         }
-        Operation::Immediate(imm) => {}
+        Operation::Immediate(imm) => {
+            vec.push(imm.clone());
+        }
         Operation::Call { fun, args } => {
             vec = args.to_vec();
         }

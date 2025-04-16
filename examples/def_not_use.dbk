@@ -1,0 +1,7 @@
+def main(x):
+let z = 1
+in
+def A(x):
+x + z
+in
+x
