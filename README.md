@@ -22,7 +22,9 @@ This project is ideal for those studying compiler design, language implementatio
 ## 🐍 SnakeLang Syntax Example
 
 ```snk
-let x = 10
-let y = 20
-let sum = fn(a, b) => a + b
-print(sum(x, y))
+def main(x):
+  let x = x[0] in
+  def factorial(n):
+    if n == 0: 1 else: n * factorial(n - 1)
+  in
+  factorial(x)
