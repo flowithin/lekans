@@ -1,6 +1,5 @@
 # 🐍 SnakeLang Compiler
 
-
 A lightweight compiler for **SnakeLang** — a minimal, educational programming language inspired by Python and functional languages. This project demonstrates core compiler concepts such as parsing, SSA transformation, optimization, and code generation.
 
 ## 🚀 Overview
